@@ -17,7 +17,9 @@ DS : 2d over time and frequency in this order
 nu0 = 1.4e+9 #or np.mean(nu)
 fD,tau,SS = compute_nutSS(t,nu,DS,nu0=nu0) #or just do FFT power spectrum
 
-stau, fD, staufD = compute_staufD(fD,tau,SS)
+N_stau = 100 #alter to change resolution (lower resolution increases S/N)
+tau_max = np.max(tau) #decrease this to cut off high delays with low S/N
+stau, fD, staufD = compute_staufD(fD,tau,SS,N_stau=N_stau,tau_max=tau_max)
 
 #range parameters
 zeta_max = 2.0e-9 #covers curvatures down to 0.03 s^3
