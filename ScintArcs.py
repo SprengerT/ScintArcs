@@ -1,33 +1,11 @@
 import numpy as np
-from numpy import newaxis as na
 import os
-from numpy.ctypeslib import ndpointer
-import ctypes
-import scipy
 from scipy import odr
-from scipy.optimize import curve_fit
 import matplotlib as mpl
 import matplotlib.style as mplstyle
 mplstyle.use('fast')
 import matplotlib.pyplot as plt
 from skimage.measure import block_reduce
-
-dir_path = os.path.dirname(os.path.realpath(__file__))
-file_c = os.path.join(os.path.join(dir_path,"libcpp"),"lib_NuT.so")
-lib = ctypes.CDLL(file_c)
-
-#load C++ library for fast NuT transform
-lib.NuT.argtypes = [
-    ctypes.c_int,   # N_t
-    ctypes.c_int,   # N_nu
-    ctypes.c_int,   # N_fD
-    ndpointer(dtype=np.float64, flags='CONTIGUOUS', ndim=1),  # tt [N_t]
-    ndpointer(dtype=np.float64, flags='CONTIGUOUS', ndim=1),  # nu [N_nu]
-    ndpointer(dtype=np.float64, flags='CONTIGUOUS', ndim=1),  # fD [N_t]
-    ndpointer(dtype=np.float64, flags='CONTIGUOUS', ndim=1),  # DS [N_t*N_nu]
-    ndpointer(dtype=np.float64, flags='CONTIGUOUS', ndim=1),  # hSS_real [N_t*N_nu]
-    ndpointer(dtype=np.float64, flags='CONTIGUOUS', ndim=1),  # hSS_im [N_t*N_nu]
-] 
 
 class SecSpec():
     
@@ -195,7 +173,7 @@ class manual_data():
         self.figure.canvas.draw_idle()
         print("Fit result: eta={0} +- {1}.".format(self.eta,self.eta_err))
 
-def compute_nutSS(t,nu,DS,nu0=1.4e+9):
+def compute_nutSS(t,nu,DS,nu0=1.4e+9,mode="C++"):
     N_t = len(t)
     N_nu = len(nu)
     dt = np.diff(t).mean()
@@ -204,14 +182,50 @@ def compute_nutSS(t,nu,DS,nu0=1.4e+9):
     #compute axes
     fD = np.fft.fftshift(np.fft.fftfreq(N_t,dt))
     tau = np.fft.fftshift(np.fft.fftfreq(N_nu,dnu))
-    #- prepare data
-    data = DS - np.mean(DS)
-    tt = (t-t0)/nu0
-    hss_real = np.zeros((N_t*N_nu),dtype='float64')
-    hss_im = np.zeros((N_t*N_nu),dtype='float64')
-    lib.NuT(N_t,N_nu,N_t,tt.astype('float64'),nu.astype('float64'),fD.astype('float64'),data.astype('float64').flatten(),hss_real,hss_im)
-    hss = hss_real.reshape((N_t,N_nu))+1.j*hss_im.reshape((N_t,N_nu))
-    SS = np.abs(np.fft.fftshift(np.fft.fft(hss,axis=1),axes=1))**2
+    
+    if mode=="C++":
+        from numpy.ctypeslib import ndpointer
+        import ctypes
+        
+        dir_path = os.path.dirname(os.path.realpath(__file__))
+        file_c = os.path.join(os.path.join(dir_path,"libcpp"),"lib_NuT.so")
+        lib = ctypes.CDLL(file_c)
+
+        #load C++ library for fast NuT transform
+        lib.NuT.argtypes = [
+            ctypes.c_int,   # N_t
+            ctypes.c_int,   # N_nu
+            ctypes.c_int,   # N_fD
+            ndpointer(dtype=np.float64, flags='CONTIGUOUS', ndim=1),  # tt [N_t]
+            ndpointer(dtype=np.float64, flags='CONTIGUOUS', ndim=1),  # nu [N_nu]
+            ndpointer(dtype=np.float64, flags='CONTIGUOUS', ndim=1),  # fD [N_t]
+            ndpointer(dtype=np.float64, flags='CONTIGUOUS', ndim=1),  # DS [N_t*N_nu]
+            ndpointer(dtype=np.float64, flags='CONTIGUOUS', ndim=1),  # hSS_real [N_t*N_nu]
+            ndpointer(dtype=np.float64, flags='CONTIGUOUS', ndim=1),  # hSS_im [N_t*N_nu]
+        ] 
+        
+        #- prepare data
+        data = DS - np.mean(DS)
+        tt = (t-t0)/nu0
+        hss_real = np.zeros((N_t*N_nu),dtype='float64')
+        hss_im = np.zeros((N_t*N_nu),dtype='float64')
+        lib.NuT(N_t,N_nu,N_t,tt.astype('float64'),nu.astype('float64'),fD.astype('float64'),data.astype('float64').flatten(),hss_real,hss_im)
+        hss = hss_real.reshape((N_t,N_nu))+1.j*hss_im.reshape((N_t,N_nu))
+        SS = np.abs(np.fft.fftshift(np.fft.fft(hss,axis=1),axes=1))**2
+    elif mode=="Python":
+        # subtract mean
+        data = DS - np.mean(DS)
+        # rescale time axis
+        tt = (t-t0)/nu0
+        # define secspec that is only transformed over t
+        hss = np.zeros((N_t,N_nu),dtype=complex)
+        # perform slow FT over time axis
+        for i_nu,v_nu in enumerate(nu):
+            for i_fD,v_fD in enumerate(fD):
+                hss[i_fD,i_nu] += np.sum(data[:,i_nu]*np.exp(-2.0j*np.pi*v_fD*tt*v_nu))
+        SS = np.abs(np.fft.fftshift(np.fft.fft(hss,axis=1),axes=1))**2
+    else:
+        raise KeyError("Unrecognized mode.")
     
     return fD,tau,SS
 
@@ -230,7 +244,7 @@ def compute_staufD(fD,tau,SS,**kwargs):
     dstau = stau[1]-stau[0]
     stau_u = stau+dstau/2.
     stau_l = stau-dstau/2.
-    taus = stau**2*np.sign(stau)
+    #taus = stau**2*np.sign(stau)
     taus_1 = stau_u**2*np.sign(stau_u)
     taus_2 = stau_l**2*np.sign(stau_l)
     taus_u = np.maximum(taus_1,taus_2)
@@ -339,12 +353,13 @@ def LineFinder(stau, fD, staufD,**kwargs):
     ymin = kwargs.get("ymin",np.min(stau)/1.0e-3)
     ymax = kwargs.get("ymax",np.max(stau)/1.0e-3)
     nu0 = kwargs.get("nu0",1.4e+9)
+    cmap = kwargs.get("cmap","viridis")
     zeta_max = kwargs.get("zeta_max",1.0e-9)
     zeta_init= kwargs.get("zeta_init",0.0)
 
     def plot_staufD(ax,fd,stau,staufD,nx,ny):
-        sampling_fd = np.max([int(len(fd)/ny),1])
-        sampling_stau = np.max([int(len(stau)/nx),1])
+        sampling_fd = np.max([int(len(fd)/nx),1])
+        sampling_stau = np.max([int(len(stau)/ny),1])
         data_staufD = block_reduce(np.abs(staufD), block_size=(sampling_fd,sampling_stau), func=np.mean)
         coordinates = np.array([fd,fd])
         coordinates = block_reduce(coordinates, block_size=(1,sampling_fd), func=np.mean, cval=fd[-1])
@@ -356,7 +371,7 @@ def LineFinder(stau, fD, staufD,**kwargs):
         data_staufD[data_staufD == 0] = min_nonzero
         data_staufD = np.log10(data_staufD)
         data_staufD = np.swapaxes(data_staufD,0,1)
-        im = ax.pcolormesh(data_fd,data_stau,data_staufD,cmap='viridis',vmin=vmin,vmax=vmax,shading='nearest')
+        im = ax.pcolormesh(data_fd,data_stau,data_staufD,cmap=cmap,vmin=vmin,vmax=vmax,shading='nearest')
         plt.colorbar(im,ax=ax)
 
     #set up the canvas
@@ -375,8 +390,8 @@ def LineFinder(stau, fD, staufD,**kwargs):
     plot_staufD(ax,fD/1.0e-3,stau/1.0e-3,staufD,500,500)
     ax.set_xlim([xmin,xmax])
     ax.set_ylim([ymin,ymax])
-    ax.set_xlabel(r"$\sqrt{\tau}$ [$\sqrt{\mu s}$]")
-    ax.set_ylabel(r"$f_{\rm D}$ [mHz]")
+    ax.set_ylabel(r"$\sqrt{\tau}$ [$\sqrt{\mu s}$]")
+    ax.set_xlabel(r"$f_{\rm D}$ [mHz]")
     slider_zeta = mpl.widgets.Slider(plt.axes([0.12,0.02,0.7,0.03]),r'$\zeta$',0.0,zeta_max,valinit=zeta_init)
     slider_err = mpl.widgets.Slider(plt.axes([0.53,0.07,0.4,0.03]),r'$\sigma_{\zeta}$ %',0.0,50.0,valinit=0.0)
     button_save = mpl.widgets.Button(plt.axes([0.12,0.07,0.1,0.03]), "save")
